@@ -28,6 +28,7 @@ def _stream_yt_to_file(url, format_spec, is_merge, out_path, ffmpeg_location, co
     """
     Запускает yt-dlp с выводом в stdout и пишет поток во временный файл.
     Не держит весь файл в памяти; вызывать из run_in_executor.
+    При ненулевом коде возврата yt-dlp выбрасывает RuntimeError.
     """
     cmd = [
         sys.executable, '-m', 'yt_dlp',
@@ -45,7 +46,7 @@ def _stream_yt_to_file(url, format_spec, is_merge, out_path, ffmpeg_location, co
         cmd.insert(-1, cookies_path)
     env = os.environ.copy()
     env.setdefault("YT_DLP_NO_EJS", "1")
-    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env)
+    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
     try:
         with open(out_path, 'wb') as f:
             while True:
@@ -56,6 +57,11 @@ def _stream_yt_to_file(url, format_spec, is_merge, out_path, ffmpeg_location, co
     finally:
         process.wait()
         process.stdout.close()
+        if process.returncode != 0:
+            err = process.stderr.read().decode('utf-8', errors='replace').strip() or f"exit code {process.returncode}"
+            process.stderr.close()
+            raise RuntimeError(f"yt-dlp failed: {err[:500]}")
+        process.stderr.close()
 
 
 class YoutubeDownloader:
@@ -163,7 +169,7 @@ class YoutubeDownloader:
             return size / 1024 / 1024
 
         # Видео: одна кнопка — bestvideo+bestaudio/best
-        video_buttons = [[Button.inline("Видео — лучшее качество", data=f"yt/dl/{video_id}/mp4/best/?")]]
+        video_buttons = [[Button.inline("Видео — 720p", data=f"yt/dl/{video_id}/mp4/merge_720/?")]]
 
         # Pick 2 best audio-only formats by abr
         audio_buttons = []
@@ -295,6 +301,13 @@ class YoutubeDownloader:
                         pass
                     await db.set_file_processing_flag(user_id, is_processing=False)
                     return await downloading_message.edit(f"Ошибка при скачивании: {e}")
+                if not os.path.isfile(path) or os.path.getsize(path) == 0:
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        pass
+                    await db.set_file_processing_flag(user_id, is_processing=False)
+                    return await downloading_message.edit("Ошибка: файл не был записан или пустой.")
                 await downloading_message.delete()
             else:
                 local_availability_message = await event.respond(

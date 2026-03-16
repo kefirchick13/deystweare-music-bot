@@ -1,3 +1,4 @@
+import logging
 from utils import BroadcastManager, db, asyncio, sanitize_query, DownloadError, os
 from plugins import SpotifyDownloader, ShazamHelper, Insta, YoutubeDownloader
 from run import events, Button, MessageMediaDocument, update_bot_version_user_season, is_user_in_channel, \
@@ -492,7 +493,12 @@ class Bot:
     @staticmethod
     async def handle_youtube_callback(client, event):
         if event.data.startswith(b"yt/dl/"):
-            await YoutubeDownloader.download_and_send_yt_file(client, event)
+            try:
+                await YoutubeDownloader.download_and_send_yt_file(client, event)
+            except Exception as e:
+                logging.getLogger(__name__).exception("YouTube download failed")
+                await db.set_file_processing_flag(event.sender_id, is_processing=False)
+                await event.respond(f"Ошибка при загрузке YouTube: {e}")
 
     @staticmethod
     async def callback_query_handler(event):

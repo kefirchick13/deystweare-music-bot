@@ -1,3 +1,4 @@
+from typing import Optional
 from utils import bs4, wget
 from utils import asyncio, re, requests
 
@@ -25,7 +26,7 @@ class Insta:
         return bool(match)
 
     @staticmethod
-    def extract_url(text) -> str | None:
+    def extract_url(text) -> Optional[str]:
         pattern = r'(https?:\/\/(?:www\.)?(?:ddinstagram\.com|instagram\.com|instagr\.am)\/(?:p|reel|tv|stories)\/[\w-]+\/?(?:\?[^\s]+)?(?:={1,2})?)'
         match = re.search(pattern, text)
         if match:

@@ -52,58 +52,58 @@ class Buttons:
 
     @staticmethod
     def get_core_setting_buttons(core):
-        match core:
-            case "Auto":
-                return [
-                    [Button.inline("🔸 Auto", data=b"setting/core/auto")],
-                    [Button.inline("YoutubeDL", b"setting/core/youtubedl")],
-                    [Button.inline("SpotDL", b"setting/core/spotdl")],
-                    [Buttons.back_button, Buttons.back_button_to_setting],
-                ]
-            case "SpotDL":
-                return [
-                    [Button.inline("Auto", data=b"setting/core/auto")],
-                    [Button.inline("YoutubeDL", b"setting/core/youtubedl")],
-                    [Button.inline("🔸 SpotDL", b"setting/core/spotdl")],
-                    [Buttons.back_button, Buttons.back_button_to_setting],
-                ]
-            case "YoutubeDL":
-                return [
-                    [Button.inline("Auto", data=b"setting/core/auto")],
-                    [Button.inline("🔸 YoutubeDL", b"setting/core/youtubedl")],
-                    [Button.inline("SpotDL", b"setting/core/spotdl")],
-                    [Buttons.back_button, Buttons.back_button_to_setting],
-                ]
+        if core == "Auto":
+            return [
+                [Button.inline("🔸 Auto", data=b"setting/core/auto")],
+                [Button.inline("YoutubeDL", b"setting/core/youtubedl")],
+                [Button.inline("SpotDL", b"setting/core/spotdl")],
+                [Buttons.back_button, Buttons.back_button_to_setting],
+            ]
+        if core == "SpotDL":
+            return [
+                [Button.inline("Auto", data=b"setting/core/auto")],
+                [Button.inline("YoutubeDL", b"setting/core/youtubedl")],
+                [Button.inline("🔸 SpotDL", b"setting/core/spotdl")],
+                [Buttons.back_button, Buttons.back_button_to_setting],
+            ]
+        if core == "YoutubeDL":
+            return [
+                [Button.inline("Auto", data=b"setting/core/auto")],
+                [Button.inline("🔸 YoutubeDL", b"setting/core/youtubedl")],
+                [Button.inline("SpotDL", b"setting/core/spotdl")],
+                [Buttons.back_button, Buttons.back_button_to_setting],
+            ]
+        return []
 
     @staticmethod
     def get_quality_setting_buttons(music_quality):
         if isinstance(music_quality['quality'], int):
             music_quality['quality'] = str(music_quality['quality'])
 
-        match music_quality:
-            case {'format': 'flac', 'quality': "693"}:
-                return [
-                    [Button.inline("◽️ Flac", b"setting/quality/flac")],
-                    [Button.inline("Mp3 (320)", b"setting/quality/mp3/320")],
-                    [Button.inline("Mp3 (128)", b"setting/quality/mp3/128")],
-                    [Buttons.back_button, Buttons.back_button_to_setting],
-                ]
-
-            case {'format': "mp3", 'quality': "320"}:
-                return [
-                    [Button.inline("Flac", b"setting/quality/flac")],
-                    [Button.inline("◽️ Mp3 (320)", b"setting/quality/mp3/320")],
-                    [Button.inline("Mp3 (128)", b"setting/quality/mp3/128")],
-                    [Buttons.back_button, Buttons.back_button_to_setting],
-                ]
-
-            case {'format': "mp3", 'quality': "128"}:
-                return [
-                    [Button.inline("Flac", b"setting/quality/flac")],
-                    [Button.inline("Mp3 (320)", b"setting/quality/mp3/320")],
-                    [Button.inline("◽️ Mp3 (128)", b"setting/quality/mp3/128")],
-                    [Buttons.back_button, Buttons.back_button_to_setting],
-                ]
+        fmt = music_quality.get('format')
+        q = music_quality.get('quality')
+        if fmt == 'flac' and q == "693":
+            return [
+                [Button.inline("◽️ Flac", b"setting/quality/flac")],
+                [Button.inline("Mp3 (320)", b"setting/quality/mp3/320")],
+                [Button.inline("Mp3 (128)", b"setting/quality/mp3/128")],
+                [Buttons.back_button, Buttons.back_button_to_setting],
+            ]
+        if fmt == "mp3" and q == "320":
+            return [
+                [Button.inline("Flac", b"setting/quality/flac")],
+                [Button.inline("◽️ Mp3 (320)", b"setting/quality/mp3/320")],
+                [Button.inline("Mp3 (128)", b"setting/quality/mp3/128")],
+                [Buttons.back_button, Buttons.back_button_to_setting],
+            ]
+        if fmt == "mp3" and q == "128":
+            return [
+                [Button.inline("Flac", b"setting/quality/flac")],
+                [Button.inline("Mp3 (320)", b"setting/quality/mp3/320")],
+                [Button.inline("◽️ Mp3 (128)", b"setting/quality/mp3/128")],
+                [Buttons.back_button, Buttons.back_button_to_setting],
+            ]
+        return []
 
     @staticmethod
     def get_search_result_buttons(sanitized_query, search_result, page=1) -> list:

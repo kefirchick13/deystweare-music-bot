@@ -16,7 +16,7 @@ class Bot:
             await Bot.initialize_database()
             Bot.initialize_shazam()
             Bot.initialize_instagram()
-            Bot.initialize_youtube()
+            # Bot.initialize_youtube()  # YouTube отключён — см. README «YouTube: как включить обратно»
             Bot.initialize_buttons()
             await Bot.initialize_action_queries()
             print("Bot initialization completed successfully.")
@@ -422,29 +422,30 @@ class Bot:
         except:
             await event.answer("⚠️ Not available.")
 
-    @staticmethod
-    async def process_youtube_link(event):
-        if not await Bot.process_bot_interaction(event):
-            return
-
-        waiting_message = await event.respond('⏳')
-
-        youtube_link = YoutubeDownloader.extract_youtube_url(event.message.text)
-        if not youtube_link:
-            await waiting_message.delete()
-            return await event.respond("Sorry, Bad Youtube Link.")
-        try:
-            await YoutubeDownloader.send_youtube_info(Bot.Client, event, youtube_link)
-            await waiting_message.delete()
-        except DownloadError as e:
-            await waiting_message.delete()
-            err_msg = str(e)
-            if 'bot' in err_msg.lower() or 'cookies' in err_msg.lower():
-                await event.respond(
-                    "YouTube временно блокирует запросы. На сервере можно включить поддержку cookies (переменная YTDL_COOKIES).\n\nОшибка: " + err_msg[:400]
-                )
-            else:
-                await event.respond("Ошибка при получении видео с YouTube:\n" + err_msg[:400])
+    # --- YouTube: закомментировано (см. README «YouTube: как включить обратно») ---
+    # @staticmethod
+    # async def process_youtube_link(event):
+    #     if not await Bot.process_bot_interaction(event):
+    #         return
+    #
+    #     waiting_message = await event.respond('⏳')
+    #
+    #     youtube_link = YoutubeDownloader.extract_youtube_url(event.message.text)
+    #     if not youtube_link:
+    #         await waiting_message.delete()
+    #         return await event.respond("Sorry, Bad Youtube Link.")
+    #     try:
+    #         await YoutubeDownloader.send_youtube_info(Bot.Client, event, youtube_link)
+    #         await waiting_message.delete()
+    #     except DownloadError as e:
+    #         await waiting_message.delete()
+    #         err_msg = str(e)
+    #         if 'bot' in err_msg.lower() or 'cookies' in err_msg.lower():
+    #             await event.respond(
+    #                 "YouTube временно блокирует запросы. На сервере можно включить поддержку cookies (переменная YTDL_COOKIES).\n\nОшибка: " + err_msg[:400]
+    #             )
+    #         else:
+    #             await event.respond("Ошибка при получении видео с YouTube:\n" + err_msg[:400])
 
     @staticmethod
     async def handle_unavailable_feature(event):
@@ -490,15 +491,16 @@ class Bot:
         else:
             pass
 
-    @staticmethod
-    async def handle_youtube_callback(client, event):
-        if event.data.startswith(b"yt/dl/"):
-            try:
-                await YoutubeDownloader.download_and_send_yt_file(client, event)
-            except Exception as e:
-                logging.getLogger(__name__).exception("YouTube download failed")
-                await db.set_file_processing_flag(event.sender_id, is_processing=False)
-                await event.respond(f"Ошибка при загрузке YouTube: {e}")
+    # --- YouTube: закомментировано (см. README «YouTube: как включить обратно») ---
+    # @staticmethod
+    # async def handle_youtube_callback(client, event):
+    #     if event.data.startswith(b"yt/dl/"):
+    #         try:
+    #             await YoutubeDownloader.download_and_send_yt_file(client, event)
+    #         except Exception as e:
+    #             logging.getLogger(__name__).exception("YouTube download failed")
+    #             await db.set_file_processing_flag(event.sender_id, is_processing=False)
+    #             await event.respond(f"Ошибка при загрузке YouTube: {e}")
 
     @staticmethod
     async def callback_query_handler(event):
@@ -513,7 +515,12 @@ class Bot:
         elif event.data.startswith(b"spotify"):
             await Bot.handle_spotify_callback(event)
         elif event.data.startswith(b"yt"):
-            await Bot.handle_youtube_callback(Bot.Client, event)
+            # YouTube отключён — см. README «YouTube: как включить обратно»
+            try:
+                await event.answer("YouTube временно отключён.", alert=True)
+            except Exception:
+                pass
+            # await Bot.handle_youtube_callback(Bot.Client, event)
         elif event.data.startswith(b"next_page") or event.data.startswith(b"prev_page"):
             await Bot.handle_next_prev_page(event)
         else:
@@ -528,8 +535,10 @@ class Bot:
                 await Bot.process_audio_file(event, user_id)
             else:
                 await event.respond("Sorry, I can only process:\n-Text\n-Voice\n-Link")
-        elif YoutubeDownloader.is_youtube_link(event.message.text):
-            await Bot.process_youtube_link(event)
+        elif YoutubeDownloader.is_youtube_link(event.message.text or ""):
+            # YouTube отключён — показываем предупреждение вместо обработки (см. README)
+            await event.respond("Неверная ссылка. Поддержка YouTube временно отключена.")
+            # await Bot.process_youtube_link(event)
         elif SpotifyDownloader.is_spotify_link(event.message.text):
             await Bot.process_spotify_link(event)
         elif Insta.is_instagram_url(event.message.text):

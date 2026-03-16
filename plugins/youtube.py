@@ -1,8 +1,17 @@
 import tempfile
+import shutil
 from utils import YoutubeDL, re, lru_cache, hashlib, InputMediaPhotoExternal, db
 from utils import os, InputMediaUploadedDocument, DocumentAttributeVideo, fast_upload
 from utils import DocumentAttributeAudio, DownloadError, WebpageMediaEmptyError
 from run import Button, Buttons
+
+
+def _ffmpeg_location():
+    """Путь к каталогу с ffmpeg/ffprobe для yt-dlp (merge/postprocess)."""
+    exe = shutil.which("ffmpeg")
+    if exe:
+        return os.path.dirname(exe)
+    return "/usr/bin"
 
 
 def _ydl_cookies_opts():
@@ -206,6 +215,7 @@ class YoutubeDownloader:
                 ydl_opts_base = {
                     'outtmpl': path,
                     'quiet': True,
+                    'ffmpeg_location': _ffmpeg_location(),
                     **_ydl_cookies_opts(),
                 }
                 if is_merge:
@@ -252,6 +262,7 @@ class YoutubeDownloader:
                     'format': format_spec,
                     'outtmpl': path,
                     'quiet': True,
+                    'ffmpeg_location': _ffmpeg_location(),
                     **_ydl_cookies_opts(),
                 }
                 if is_merge:

@@ -1,4 +1,13 @@
+import os
+import shutil
 from utils import asyncio, YoutubeDL, db
+
+
+def _ffmpeg_location():
+    exe = shutil.which("ffmpeg")
+    if exe:
+        return os.path.dirname(exe)
+    return "/usr/bin"
 
 
 class YouTubeAudioDownloader:
@@ -46,7 +55,8 @@ class YouTubeAudioDownloader:
                 "outtmpl": f"{download_directory}/{filename}",
                 "quiet": True,
                 "addmetadata": True,
-                "prefer_ffmpeg": False,
+                "prefer_ffmpeg": True,
+                "ffmpeg_location": _ffmpeg_location(),
                 "geo_bypass": True,
                 "postprocessors": [{'key': 'FFmpegExtractAudio', 'preferredcodec': music_quality['format'],
                                     'preferredquality': music_quality['quality']}]

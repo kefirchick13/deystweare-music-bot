@@ -1,0 +1,3 @@
+# Установка ffmpeg в образе Railway (Nixpacks)
+[phases.setup]
+aptPkgs = ["ffmpeg"]

@@ -432,7 +432,7 @@ class Bot:
             err_msg = str(e)
             if 'bot' in err_msg.lower() or 'cookies' in err_msg.lower():
                 await event.respond(
-                    "YouTube временно блокирует запросы. На сервере можно включить поддержку cookies (переменная YTDL_COOKIES_PATH).\n\nОшибка: " + err_msg[:400]
+                    "YouTube временно блокирует запросы. На сервере можно включить поддержку cookies (переменная YTDL_COOKIES).\n\nОшибка: " + err_msg[:400]
                 )
             else:
                 await event.respond("Ошибка при получении видео с YouTube:\n" + err_msg[:400])

@@ -1,4 +1,6 @@
 import time
+import tempfile
+import shutil
 from run import Button, Buttons
 from utils import asyncio, re, os, load_dotenv, combinations
 from utils import db, SpotifyException, fast_upload, Any, CachePool
@@ -510,53 +512,73 @@ class SpotifyDownloader:
                 except Exception:
                     await db.delete_sent_file(cache_key)
 
-        if not playlist:
-            uploaded_file = await fast_upload(
-                client=event.client,
-                file_location=file_path,
-                reply=None,
-                name=file_info['file_name'],
-                progress_bar_function=None
+        # Копируем в временный файл и загружаем его — чтобы содержимое не менялось во время
+        # чтения (MD5 check-sums do not match при гонке с префетчем/записью).
+        upload_path = file_path
+        temp_path = None
+        if not playlist and os.path.isfile(file_path):
+            try:
+                fd, temp_path = tempfile.mkstemp(suffix=".mp3", prefix="upload_")
+                os.close(fd)
+                shutil.copy2(file_path, temp_path)
+                upload_path = temp_path
+            except OSError:
+                pass
+
+        try:
+            if not playlist:
+                uploaded_file = await fast_upload(
+                    client=event.client,
+                    file_location=upload_path,
+                    reply=None,
+                    name=file_info['file_name'],
+                    progress_bar_function=None
+                )
+            else:
+                uploaded_file = None
+
+            uploaded_file = await event.client.upload_file(uploaded_file if not playlist else upload_path)
+            uploaded_thumbnail = await event.client.upload_file(icon_path)
+
+            audio_attributes = DocumentAttributeAudio(
+                duration=0,
+                title=f"{spotify_link_info['track_name']} - {spotify_link_info['artist_name']}",
+                performer="@deystweare_music_bot",
+                waveform=None,
+                voice=False
             )
-        else:
-            uploaded_file = None
 
-        uploaded_file = await event.client.upload_file(uploaded_file if not playlist else file_path)
-        uploaded_thumbnail = await event.client.upload_file(icon_path)
-
-        audio_attributes = DocumentAttributeAudio(
-            duration=0,
-            title=f"{spotify_link_info['track_name']} - {spotify_link_info['artist_name']}",
-            performer="@deystweare_music_bot",
-            waveform=None,
-            voice=False
-        )
-
-        media = InputMediaUploadedDocument(
-            file=uploaded_file,
-            thumb=uploaded_thumbnail,
-            mime_type='audio/mpeg',
-            attributes=[audio_attributes],
-        )
-
-        sent_msg = await event.client.send_file(
-            event.chat_id,
-            media,
-            caption=caption,
-            supports_streaming=True,
-            force_document=False,
-            thumb=icon_path
-        )
-
-        # Сохраняем document в кэш — при следующем запросе того же трека отправим без загрузки
-        if not playlist and sent_msg and sent_msg.media and getattr(sent_msg.media, 'document', None):
-            doc = sent_msg.media.document
-            await db.set_sent_file(
-                cache_key,
-                doc.id,
-                doc.access_hash,
-                getattr(doc, 'file_reference', None) or b''
+            media = InputMediaUploadedDocument(
+                file=uploaded_file,
+                thumb=uploaded_thumbnail,
+                mime_type='audio/mpeg',
+                attributes=[audio_attributes],
             )
+
+            sent_msg = await event.client.send_file(
+                event.chat_id,
+                media,
+                caption=caption,
+                supports_streaming=True,
+                force_document=False,
+                thumb=icon_path
+            )
+
+            # Сохраняем document в кэш — при следующем запросе того же трека отправим без загрузки
+            if not playlist and sent_msg and sent_msg.media and getattr(sent_msg.media, 'document', None):
+                doc = sent_msg.media.document
+                await db.set_sent_file(
+                    cache_key,
+                    doc.id,
+                    doc.access_hash,
+                    getattr(doc, 'file_reference', None) or b''
+                )
+        finally:
+            if temp_path and os.path.isfile(temp_path):
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
 
     @staticmethod
     # youtube / soundcloud логика вынесена в отдельные классы

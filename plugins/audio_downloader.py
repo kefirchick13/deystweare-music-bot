@@ -41,3 +41,20 @@ class AudioDownloader:
 
         return False, yt_message
 
+    @staticmethod
+    async def prefetch_track(spotify_link_info, music_quality, file_info, download_directory: str, max_size_mb: int):
+        """Предиктивное скачивание без сообщений в чат (event=None). При показе карточки трека."""
+        file_path = file_info["file_path"]
+        if os.path.isfile(file_path):
+            return True
+        sc_result, _ = await SoundCloudAudioDownloader.download(
+            None, file_info, music_quality, download_directory, is_playlist=True, spotify_link_info=spotify_link_info
+        )
+        if sc_result and os.path.isfile(file_path):
+            return True
+        yt_result, _ = await YouTubeAudioDownloader.download(
+            None, file_info, music_quality, download_directory, max_size_mb, is_playlist=True,
+            spotify_link_info=spotify_link_info
+        )
+        return bool(yt_result and os.path.isfile(file_path))
+

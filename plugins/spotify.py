@@ -1,11 +1,18 @@
+import time
 from run import Button, Buttons
 from utils import asyncio, re, os, load_dotenv, combinations
-from utils import db, SpotifyException, fast_upload, Any
+from utils import db, SpotifyException, fast_upload, Any, CachePool
 from utils import Image, BytesIO, aiohttp, InputMediaUploadedDocument
+from telethon.tl.types import InputDocument
 from utils import SpotifyClientCredentials, spotipy, ThreadPoolExecutor, DocumentAttributeAudio
 from utils import requests
 from .audio_downloader import AudioDownloader
 from requests.exceptions import HTTPError, ReadTimeout
+
+# TTL кэша link_info по track_id (не вызывать Spotify API и YouTube search повторно при нажатии "Download")
+LINK_INFO_CACHE_TTL_SEC = 30 * 60
+# Удалять файлы в repository/Musics старше этого возраста (префетч/кэш; отправленные треки — из sent_file_cache)
+PREFETCH_FILE_MAX_AGE_SEC = 20 * 60  # 20 минут
 
 
 class SpotifyDownloader:
@@ -37,6 +44,25 @@ class SpotifyDownloader:
                                               SpotifyClientCredentials(client_id=cls.SPOTIFY_CLIENT_ID,
                                                                        client_secret=cls.SPOTIFY_CLIENT_SECRET))
         cls.GENIUS_API_BASE = "https://api.genius.com"
+        cls._link_info_cache = CachePool(ttl_sec=LINK_INFO_CACHE_TTL_SEC)
+        cls._prefetch_tasks = {}  # file_path -> asyncio.Task (чтобы при Download дождаться префетча)
+        cls._cleanup_old_prefetch_files()
+
+    @classmethod
+    def _cleanup_old_prefetch_files(cls):
+        """Удаляет в repository/Musics файлы старше PREFETCH_FILE_MAX_AGE_SEC. Освобождает место от префетча и старых кэшей."""
+        if not os.path.isdir(cls.download_directory):
+            return
+        now = time.time()
+        for name in os.listdir(cls.download_directory):
+            path = os.path.join(cls.download_directory, name)
+            if not os.path.isfile(path):
+                continue
+            try:
+                if now - os.path.getmtime(path) > PREFETCH_FILE_MAX_AGE_SEC:
+                    os.remove(path)
+            except OSError:
+                pass
 
     @staticmethod
     def is_spotify_link(url):
@@ -59,6 +85,17 @@ class SpotifyDownloader:
 
         # Return 'none' if no resource type matches
         return 'none'
+
+    @classmethod
+    def _get_cached_link_info(cls, track_id: str):
+        if not track_id:
+            return None
+        return cls._link_info_cache.get(track_id)
+
+    @classmethod
+    def _set_cached_link_info(cls, track_id: str, link_info: dict):
+        if track_id and link_info and link_info.get('type') == 'track':
+            cls._link_info_cache.set(track_id, link_info)
 
     @staticmethod
     async def extract_data_from_spotify_link(event, spotify_url):
@@ -94,6 +131,7 @@ class SpotifyDownloader:
 
                 # Attempt to enhance track info with additional external data (e.g., YouTube link)
                 link_info['youtube_link'] = await SpotifyDownloader.extract_yt_video_info(link_info)
+                SpotifyDownloader._set_cached_link_info(link_info['track_id'], link_info)
                 return link_info
 
             elif link_type == "playlist":
@@ -353,6 +391,28 @@ class SpotifyDownloader:
         artist_names = link_info['artist_name'].split(', ')
         is_local, file_path = is_track_local(artist_names, link_info['track_name'])
 
+        # Предиктивно начинаем скачивание в фоне — к моменту нажатия "Download" файл может быть готов
+        if not is_local:
+            file_path_prefetch, filename_prefetch, _ = SpotifyDownloader._determine_file_path(link_info, music_quality)
+            file_info_prefetch = {
+                "file_name": filename_prefetch,
+                "file_path": file_path_prefetch,
+                "icon_path": SpotifyDownloader._get_icon_path(link_info),
+                "video_url": link_info.get('youtube_link'),
+            }
+            task = asyncio.create_task(
+                AudioDownloader.prefetch_track(
+                    link_info, music_quality, file_info_prefetch,
+                    SpotifyDownloader.download_directory,
+                    SpotifyDownloader.MAXIMUM_DOWNLOAD_SIZE_MB,
+                )
+            )
+            SpotifyDownloader._prefetch_tasks[file_path_prefetch] = task
+            def _remove_prefetch(fp, done_task):
+                if SpotifyDownloader._prefetch_tasks.get(fp) is done_task:
+                    SpotifyDownloader._prefetch_tasks.pop(fp, None)
+            task.add_done_callback(lambda t, fp=file_path_prefetch: _remove_prefetch(fp, t))
+
         icon_path = await SpotifyDownloader.download_icon(link_info)
 
         SpotifyInfoButtons = [
@@ -423,20 +483,43 @@ class SpotifyDownloader:
         if not os.path.exists(file_info['icon_path']):
             await SpotifyDownloader.download_icon(spotify_link_info)
 
-        # Unpack file_info for clarity
         file_path = file_info['file_path']
         icon_path = file_info['icon_path']
         video_url = file_info['video_url']
+        caption = (
+            f"🎵 **{spotify_link_info['track_name']}** by **{spotify_link_info['artist_name']}**\n\n"
+            f"▶️ [Listen on Spotify]({spotify_link_info['track_url']})\n"
+            + (f"🎥 [Watch on YouTube]({video_url})\n" if video_url else "")
+        )
+
+        # Для одного трека пробуем отправить из кэша (мгновенно, без повторной загрузки)
+        if not playlist:
+            cache_key = f"track_{spotify_link_info.get('track_id', '')}_{file_info['file_name']}"
+            cached = await db.get_sent_file(cache_key)
+            if cached:
+                try:
+                    doc_id, access_hash, file_ref = cached
+                    await event.client.send_file(
+                        event.chat_id,
+                        InputDocument(id=doc_id, access_hash=access_hash, file_reference=file_ref),
+                        caption=caption,
+                        supports_streaming=True,
+                        force_document=False,
+                    )
+                    return
+                except Exception:
+                    await db.delete_sent_file(cache_key)
 
         if not playlist:
-            # Use fast_upload for faster uploads
             uploaded_file = await fast_upload(
                 client=event.client,
                 file_location=file_path,
-                reply=None,  # No need for a progress bar in this case
+                reply=None,
                 name=file_info['file_name'],
                 progress_bar_function=None
             )
+        else:
+            uploaded_file = None
 
         uploaded_file = await event.client.upload_file(uploaded_file if not playlist else file_path)
         uploaded_thumbnail = await event.client.upload_file(icon_path)
@@ -444,32 +527,36 @@ class SpotifyDownloader:
         audio_attributes = DocumentAttributeAudio(
             duration=0,
             title=f"{spotify_link_info['track_name']} - {spotify_link_info['artist_name']}",
-            performer="@@deystweare_music_bot",
+            performer="@deystweare_music_bot",
             waveform=None,
             voice=False
         )
 
-        # Send the uploaded file as music
         media = InputMediaUploadedDocument(
             file=uploaded_file,
             thumb=uploaded_thumbnail,
-            mime_type='audio/mpeg',  # Adjust the MIME type based on your file's format
+            mime_type='audio/mpeg',
             attributes=[audio_attributes],
         )
 
-        # Send the media to the chat
-        await event.client.send_file(
+        sent_msg = await event.client.send_file(
             event.chat_id,
             media,
-            caption=(
-                    f"🎵 **{spotify_link_info['track_name']}** by **{spotify_link_info['artist_name']}**\n\n"
-                    f"▶️ [Listen on Spotify]({spotify_link_info['track_url']})\n"
-                    + (f"🎥 [Watch on YouTube]({video_url})\n" if video_url else "")
-            ),
+            caption=caption,
             supports_streaming=True,
             force_document=False,
             thumb=icon_path
         )
+
+        # Сохраняем document в кэш — при следующем запросе того же трека отправим без загрузки
+        if not playlist and sent_msg and sent_msg.media and getattr(sent_msg.media, 'document', None):
+            doc = sent_msg.media.document
+            await db.set_sent_file(
+                cache_key,
+                doc.id,
+                doc.access_hash,
+                getattr(doc, 'file_reference', None) or b''
+            )
 
     @staticmethod
     # youtube / soundcloud логика вынесена в отдельные классы
@@ -488,12 +575,19 @@ class SpotifyDownloader:
 
 
         fetch_message = await event.respond("Fetching information... Please wait.")
-        spotify_link_info = await SpotifyDownloader.extract_data_from_spotify_link(event, spotify_link)
+        # Для трека сначала проверяем кэш (если пользователь только что смотрел карточку и нажал Download)
+        if not is_playlist:
+            track_id = spotify_link.split("/")[-1].split("?")[0] if "/" in spotify_link else spotify_link
+            spotify_link_info = SpotifyDownloader._get_cached_link_info(track_id)
+        else:
+            spotify_link_info = None
+        if not spotify_link_info:
+            spotify_link_info = await SpotifyDownloader.extract_data_from_spotify_link(event, spotify_link)
 
         await db.set_file_processing_flag(user_id, 1)
         await fetch_message.delete()
 
-        if spotify_link_info['type'] == "track":
+        if spotify_link_info and spotify_link_info.get('type') == "track":
             return await SpotifyDownloader.download_track(event, spotify_link_info)
         elif spotify_link_info['type'] == "playlist":
             return await SpotifyDownloader.download_playlist(event, spotify_link_info,
@@ -528,6 +622,18 @@ class SpotifyDownloader:
     @staticmethod
     async def _handle_download(event, spotify_link_info, music_quality, file_info, spotdl, is_playlist):
         file_path = file_info["file_path"]
+        # Файл мог появиться от префетча — тогда сразу отправляем без повторного скачивания
+        if os.path.isfile(file_path):
+            return await SpotifyDownloader.send_local_file(event, file_info, spotify_link_info, is_playlist)
+        # Префетч уже запущен — ждём его и берём файл оттуда (таймаут 2 мин)
+        prefetch_task = SpotifyDownloader._prefetch_tasks.get(file_path)
+        if prefetch_task is not None:
+            try:
+                await asyncio.wait_for(prefetch_task, timeout=120)
+            except (asyncio.TimeoutError, Exception):
+                pass
+            if os.path.isfile(file_path):
+                return await SpotifyDownloader.send_local_file(event, file_info, spotify_link_info, is_playlist)
         if not spotdl:
             # Основная логика скачивания вынесена в AudioDownloader:
             # сначала SoundCloud, если не получилось — YouTube.
@@ -596,12 +702,12 @@ class SpotifyDownloader:
         await db.set_file_processing_flag(event.sender_id, 1)
 
         if number_of_downloads == "10":
-            tracks_info = await SpotifyDownloader.get_playlist_tracks(playlist_id)
+            tracks_info = await SpotifyDownloader.get_playlist_tracks(playlist_id, as_link_info=True)
         elif number_of_downloads == "all":
             music_quality = await db.get_user_music_quality(event.sender_id)
             new_music_quality = {'format': "mp3", 'quality': 320}
             await db.set_user_music_quality(event.sender_id, new_music_quality)
-            tracks_info = await SpotifyDownloader.get_playlist_tracks(playlist_id, get_all=True)
+            tracks_info = await SpotifyDownloader.get_playlist_tracks(playlist_id, get_all=True, as_link_info=True)
         else:
             await db.set_file_processing_flag(event.sender_id, 0)
             return await event.respond("Sorry, Something went wrong.\ntry again later.")
@@ -615,11 +721,10 @@ class SpotifyDownloader:
         await start_message.edit("Sending musics.... Please Hold on.")
 
         for batch in track_batches:
-            # Download tracks in the current batch concurrently
-            download_tasks.extend([SpotifyDownloader.download_track(event,
-                                                                    await SpotifyDownloader.extract_data_from_spotify_link(
-                                                                        event, track["track_id"]), is_playlist=True) for
-                                   track in batch])
+            download_tasks.extend([
+                SpotifyDownloader.download_track(event, link_info, is_playlist=True)
+                for link_info in batch
+            ])
 
             # Wait for all downloads in the batch to complete before proceeding to the next batch
             await asyncio.gather(*download_tasks)
@@ -683,12 +788,6 @@ class SpotifyDownloader:
 
         for artist_id in artist_ids:
             artist = SpotifyDownloader.spotify_account.artist(artist_id.replace("'", ""))
-
-            # Выведем в консоль полный JSON артиста для отладки
-            print("=== Spotify artist JSON ===")
-            print(artist)
-            print("=== end Spotify artist JSON ===")
-
             followers_total = artist.get('followers', {}).get('total', 0)
 
             artist_details.append({
@@ -862,9 +961,35 @@ class SpotifyDownloader:
             await event.reply("An error occurred while processing your request. Please try again later.")
 
     @staticmethod
-    async def get_playlist_tracks(playlist_id, limit: int = 10, get_all: bool = False):
+    def _link_info_from_playlist_track(track) -> dict:
+        """Собирает link_info для трека из элемента плейлиста (playlist_items), без отдельного вызова track() и YouTube search."""
+        if not track or not track.get('id'):
+            return None
+        artists = track.get('artists') or []
+        album = track.get('album') or {}
+        images = album.get('images') or []
+        return {
+            'type': 'track',
+            'track_name': track.get('name', ''),
+            'artist_name': ', '.join(a.get('name', '') for a in artists),
+            'artist_ids': [a.get('id') for a in artists if a.get('id')],
+            'artist_url': artists[0].get('external_urls', {}).get('spotify', '') if artists else '',
+            'album_name': (album.get('name') or '').translate(str.maketrans('', '', '()[]')),
+            'album_url': album.get('external_urls', {}).get('spotify', ''),
+            'release_year': (album.get('release_date') or '')[:4],
+            'image_url': images[0]['url'] if images else '',
+            'track_id': track.get('id'),
+            'isrc': (track.get('external_ids') or {}).get('isrc'),
+            'track_url': track.get('external_urls', {}).get('spotify', ''),
+            'youtube_link': None,
+            'preview_url': track.get('preview_url'),
+            'duration_ms': track.get('duration_ms', 0),
+            'track_number': track.get('track_number', 0),
+            'is_explicit': track.get('explicit', False),
+        }
 
-        # Retrieve playlist tracks
+    @staticmethod
+    async def get_playlist_tracks(playlist_id, limit: int = 10, get_all: bool = False, as_link_info: bool = False):
         if get_all:
             results = SpotifyDownloader.spotify_account.playlist_items(playlist_id)
         else:
@@ -872,19 +997,22 @@ class SpotifyDownloader:
 
         extracted_details = []
         for item in results['items']:
-            track = item['track']
-            # Extracting track name, artist's name, release year, and track ID
-            track_name = track['name']
-            artist_name = track['artists'][0]['name']  # Assuming the first artist is the primary one
-            release_year = track['album']['release_date']
-            track_id = track['id']
-
-            # Append the extracted details to the list
-            extracted_details.append({
-                "track_name": track_name,
-                "artist_name": artist_name,
-                "release_year": release_year.split("-")[0],  # Format release year as YYYY
-                "track_id": track_id
-            })
-
+            track = item.get('track')
+            if not track:
+                continue
+            if as_link_info:
+                link_info = SpotifyDownloader._link_info_from_playlist_track(track)
+                if link_info:
+                    extracted_details.append(link_info)
+            else:
+                track_name = track['name']
+                artist_name = track['artists'][0]['name']
+                release_year = track['album']['release_date'].split("-")[0]
+                track_id = track['id']
+                extracted_details.append({
+                    "track_name": track_name,
+                    "artist_name": artist_name,
+                    "release_year": release_year,
+                    "track_id": track_id
+                })
         return extracted_details

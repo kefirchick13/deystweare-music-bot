@@ -15,14 +15,18 @@ class YouTubeAudioDownloader:
     async def download(event, file_info, music_quality, download_directory: str,
                        max_size_mb: int, is_playlist: bool = False, spotify_link_info=None):
         """
-        Скачивание аудио через YouTube (yt-dlp).
+        Скачивание аудио через YouTube (yt-dlp). Если event=None (prefetch), без сообщений в чат.
         """
-        user_id = event.sender_id
-        video_url = file_info['video_url']
+        user_id = event.sender_id if event else None
+        video_url = file_info.get('video_url')
         filename = file_info['file_name']
+        silent = event is None
+        # Для prefetch или при отсутствии youtube_link ищем по запросу
+        search_query = f"{spotify_link_info['artist_name']} - {spotify_link_info['track_name']}" if spotify_link_info else None
+        video_url = video_url or (f"ytsearch:{search_query}" if search_query else None)
 
         download_message = None
-        if not is_playlist:
+        if not silent and not is_playlist:
             text = (
                 "Скачиваю аудио через YouTube...\n"
                 f"Формат: {music_quality['format']} / Качество: {music_quality['quality']}\n"
@@ -67,24 +71,25 @@ class YouTubeAudioDownloader:
                 await asyncio.to_thread(ydl.extract_info, video_url, download=True)
 
         async def download_handler():
-            file_size_task = asyncio.create_task(get_file_size(video_url))
-            file_size = await file_size_task
+            if not silent and video_url and not video_url.startswith("ytsearch:"):
+                file_size_task = asyncio.create_task(get_file_size(video_url))
+                file_size = await file_size_task
+                if file_size and file_size > max_size_mb * 1024 * 1024:
+                    await event.respond("Ошибка: размер файла больше 50 МБ.\nЗагрузка пропущена.")
+                    await db.set_file_processing_flag(user_id, 0)
+                    return False, None
 
-            if file_size and file_size > max_size_mb * 1024 * 1024:
-                await event.respond("Ошибка: размер файла больше 50 МБ.\nЗагрузка пропущена.")
-                await db.set_file_processing_flag(user_id, 0)
-                return False, None
-
-            if not is_playlist:
+            if not silent and not is_playlist and download_message:
                 await download_message.edit("Downloading . .")
 
-            download_task = asyncio.create_task(download_audio(video_url, filename, music_quality))
             try:
-                await download_task
+                await download_audio(video_url, filename, music_quality)
                 return True, download_message
             except Exception:
-                await event.respond("Something Went Wrong Processing Your Query.")
-                await db.set_file_processing_flag(user_id, 0)
+                if not silent and event:
+                    await event.respond("Something Went Wrong Processing Your Query.")
+                if user_id is not None:
+                    await db.set_file_processing_flag(user_id, 0)
                 return False, download_message
 
         return await download_handler()

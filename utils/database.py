@@ -43,6 +43,8 @@ class db:
                                         (filename TEXT PRIMARY KEY, downloads INTEGER DEFAULT 1)''')
             await conn.execute('''CREATE TABLE IF NOT EXISTS user_language
                                         (user_id INTEGER PRIMARY KEY, language TEXT DEFAULT 'ru')''')
+            await conn.execute('''CREATE TABLE IF NOT EXISTS sent_file_cache
+                                        (cache_key TEXT PRIMARY KEY, document_id INTEGER, access_hash INTEGER, file_reference BLOB)''')
             await conn.commit()
         except:
             raise
@@ -148,6 +150,25 @@ class db:
                     return True
         else:
             return False
+
+    @staticmethod
+    async def get_sent_file(cache_key: str):
+        """Возвращает (document_id, access_hash, file_reference) или None. Используется для отправки без повторной загрузки."""
+        row = await db.fetch_one('SELECT document_id, access_hash, file_reference FROM sent_file_cache WHERE cache_key = ?', (cache_key,))
+        if row and row[0] is not None:
+            return (row[0], row[1], row[2] or b'')
+        return None
+
+    @staticmethod
+    async def set_sent_file(cache_key: str, document_id: int, access_hash: int, file_reference: bytes):
+        await db.execute_query(
+            'INSERT OR REPLACE INTO sent_file_cache (cache_key, document_id, access_hash, file_reference) VALUES (?, ?, ?, ?)',
+            (cache_key, document_id, access_hash, file_reference or b'')
+        )
+
+    @staticmethod
+    async def delete_sent_file(cache_key: str):
+        await db.execute_query('DELETE FROM sent_file_cache WHERE cache_key = ?', (cache_key,))
 
     @staticmethod
     async def get_user_music_quality(user_id):

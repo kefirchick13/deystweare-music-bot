@@ -18,12 +18,14 @@ class SoundCloudAudioDownloader:
         """
         Основной вариант: попытка скачать трек с SoundCloud через yt-dlp
         с использованием поиска scsearch:<artist> - <title>.
+        Если event=None (prefetch), скачивание без сообщений в чат.
         """
-        user_id = event.sender_id
+        user_id = event.sender_id if event else None
         filename = file_info['file_name']
+        silent = event is None
 
         download_message = None
-        if not is_playlist:
+        if not silent and not is_playlist:
             text = (
                 "Скачиваю аудио через SoundCloud...\n"
                 f"Формат: {music_quality['format']} / Качество: {music_quality['quality']}\n"
@@ -50,7 +52,8 @@ class SoundCloudAudioDownloader:
             }
 
             with YoutubeDL(ydl_opts) as ydl:
-                await download_message.edit("Downloading from SoundCloud . . .") if not is_playlist else None
+                if not silent and not is_playlist and download_message:
+                    await download_message.edit("Downloading from SoundCloud . . .")
                 await asyncio.to_thread(ydl.extract_info, query, download=True)
 
         async def download_handler():
@@ -58,11 +61,13 @@ class SoundCloudAudioDownloader:
                 await download_audio_from_sc(query, filename, music_quality)
                 return True, download_message
             except Exception as ERR:
-                await event.respond(
-                    "Не удалось скачать трек через SoundCloud.\n"
-                    f"Подробнее: {ERR}"
-                )
-                await db.set_file_processing_flag(user_id, 0)
+                if not silent and event:
+                    await event.respond(
+                        "Не удалось скачать трек через SoundCloud.\n"
+                        f"Подробнее: {ERR}"
+                    )
+                if user_id is not None:
+                    await db.set_file_processing_flag(user_id, 0)
                 return False, download_message
 
         return await download_handler()

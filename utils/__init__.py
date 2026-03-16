@@ -1,4 +1,5 @@
 from utils.broadcast import BroadcastManager
+from utils.cache import CachePool
 from utils.database import db
 from spotipy.oauth2 import SpotifyClientCredentials
 from yt_dlp.utils import DownloadError

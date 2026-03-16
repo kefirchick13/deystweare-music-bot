@@ -54,7 +54,7 @@ class db:
     @classmethod
     async def set_default_values(cls):
         cls.default_downloading_core: str = "Auto"
-        cls.default_music_quality: dict = {'format': 'mp3', 'quality': '128'}
+        cls.default_music_quality: dict = {'format': 'mp3', 'quality': '320'}
         cls.default_tweet_capture_setting: dict = {'night_mode': '0'}
 
     @staticmethod

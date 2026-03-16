@@ -494,16 +494,14 @@ class SpotifyDownloader:
     async def _upload_file(event, file_info, spotify_link_info, playlist: bool = False,
                            upload_status_message=None):
 
-        if not os.path.exists(file_info['icon_path']):
+        # У одиночного трека обложка уже загружена при показе карточки; у плейлиста — докачиваем при необходимости
+        if playlist and not os.path.exists(file_info['icon_path']):
             await SpotifyDownloader.download_icon(spotify_link_info)
 
         file_path = file_info['file_path']
         icon_path = file_info['icon_path']
-        video_url = file_info['video_url']
         caption = (
-            f"🎵 **{spotify_link_info['track_name']}** by **{spotify_link_info['artist_name']}**\n\n"
-            f"▶️ [Listen on Spotify]({spotify_link_info['track_url']})\n"
-            + (f"🎥 [Watch on YouTube]({video_url})\n" if video_url else "")
+            f"🎵 **{spotify_link_info['track_name']}** — **{spotify_link_info['artist_name']}**"
         )
 
         # Для одного трека пробуем отправить из кэша (мгновенно, без повторной загрузки)

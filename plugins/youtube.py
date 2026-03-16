@@ -1,4 +1,3 @@
-import json
 import tempfile
 from utils import YoutubeDL, re, lru_cache, hashlib, InputMediaPhotoExternal, db
 from utils import os, InputMediaUploadedDocument, DocumentAttributeVideo, fast_upload
@@ -110,8 +109,6 @@ class YoutubeDownloader:
             info = ydl.extract_info(url, download=False)
             thumbnail_url = info['thumbnail']   
 
-        # Разбираем форматы: видео с аудио и только аудио
-        video_formats = [f for f in formats if f.get('vcodec') != 'none' and f.get('acodec') != 'none']
         audio_formats = [f for f in formats if f.get('acodec') != 'none' and f.get('vcodec') == 'none']
 
         def _filesize_mb(fmt):
@@ -120,46 +117,8 @@ class YoutubeDownloader:
                 return None
             return size / 1024 / 1024
 
-        # Видео:
-        # - если у форматов есть известный размер — показываем КАЖДЫЙ такой формат отдельной кнопкой
-        # - если размеров нет — одна кнопка «лучшее качество» по максимальной высоте
-        video_buttons = []
-        video_with_size = [f for f in video_formats if _filesize_mb(f) is not None]
-
-        if video_with_size:
-            # Показать все форматы с известным размером
-            for fmt in sorted(
-                video_with_size,
-                key=lambda f: (f.get('height') or 0, _filesize_mb(f) or 0),
-                reverse=True,
-            ):
-                extension = fmt.get('ext')
-                height = fmt.get('height')
-                width = fmt.get('width')
-                size_mb = _filesize_mb(fmt)
-                if not extension or not fmt.get('format_id'):
-                    continue
-                label = f"{extension} - {height}p" if height and not width else \
-                    (f"{extension} - {width}x{height}" if height and width else extension)
-                filesize_str = f"{size_mb:.2f} MB"
-                button_data = f"yt/dl/{video_id}/{extension}/{fmt['format_id']}/{filesize_str}"
-                button = [Button.inline(f"{label} - {filesize_str}", data=button_data)]
-                if button not in video_buttons:
-                    video_buttons.append(button)
-        else:
-            # Нет размеров — одна кнопка «лучшее качество»
-            if video_formats:
-                best_fmt = max(
-                    video_formats,
-                    key=lambda f: (f.get('height') or 0, _filesize_mb(f) or 0),
-                )
-                extension = best_fmt.get('ext') or 'mp4'
-                height = best_fmt.get('height')
-                size_mb = _filesize_mb(best_fmt)
-                filesize_str = f"{size_mb:.2f} MB" if size_mb is not None else "?"
-                label = "best video" if not height else f"{extension} - {height}p (best)"
-                button_data = f"yt/dl/{video_id}/{extension}/{best_fmt['format_id']}/{filesize_str}"
-                video_buttons.append([Button.inline(f"{label} - {filesize_str}", data=button_data)])
+        # Видео: одна кнопка — bestvideo+bestaudio/best
+        video_buttons = [[Button.inline("Видео — лучшее качество", data=f"yt/dl/{video_id}/mp4/best/?")]]
 
         # Pick 2 best audio-only formats by abr
         audio_buttons = []
@@ -225,14 +184,16 @@ class YoutubeDownloader:
             local_availability_message = None
             url = "https://www.youtube.com/watch?v=" + video_id
 
-            is_merge = format_id.startswith("merge_")
-            if is_merge:
+            is_merge = format_id.startswith("merge_") or format_id == "best"
+            if format_id == "best":
+                format_spec = "bestvideo+bestaudio/best"
+                path = YoutubeDownloader.get_file_path(url, "best", "mp4")
+            elif format_id.startswith("merge_"):
                 try:
                     height = int(format_id.replace("merge_", ""))
                     format_spec = f"bestvideo[height<={height}]+bestaudio/best[height<={height}]"
                 except ValueError:
-                    format_spec = format_id
-                    height = 1080
+                    format_spec = "bestvideo+bestaudio/best"
                 path = YoutubeDownloader.get_file_path(url, format_id, "mp4")
             else:
                 format_spec = format_id
@@ -242,25 +203,46 @@ class YoutubeDownloader:
                 size_label = f"{filesize_str} MB" if filesize_str != "?" else ""
                 downloading_message = await event.respond(
                     f"Скачиваю файл с YouTube ({size_label})... Это может занять некоторое время.".strip())
-                ydl_opts = {
-                    'format': format_spec,
+                ydl_opts_base = {
                     'outtmpl': path,
                     'quiet': True,
                     **_ydl_cookies_opts(),
                 }
                 if is_merge:
-                    ydl_opts['merge_output_format'] = 'mp4'
+                    ydl_opts_base['merge_output_format'] = 'mp4'
 
-                with YoutubeDL(ydl_opts) as ydl:
-                    try:
+                info = None
+                try:
+                    ydl_opts = {**ydl_opts_base, 'format': format_spec}
+                    with YoutubeDL(ydl_opts) as ydl:
                         info = ydl.extract_info(url, download=True)
-                        duration = info.get('duration', 0)
-                        width = info.get('width', 0)
-                        height = info.get('height', 0)
-                    except DownloadError as e:
+                except DownloadError as e:
+                    if 'not available' in str(e).lower() or 'requested format' in str(e).lower():
+                        # Формат недоступен — пробуем лучшее качество (video+audio)
+                        fallback_path = YoutubeDownloader.get_file_path(url, "best", extension if extension == "mp4" else "mp4")
+                        try:
+                            ydl_opts = {
+                                **ydl_opts_base,
+                                'format': 'bestvideo+bestaudio/best',
+                                'outtmpl': fallback_path,
+                                'merge_output_format': 'mp4',
+                            }
+                            with YoutubeDL(ydl_opts) as ydl:
+                                info = ydl.extract_info(url, download=True)
+                            path = fallback_path
+                            extension = "mp4"
+                        except DownloadError:
+                            await db.set_file_processing_flag(user_id, is_processing=False)
+                            return await downloading_message.edit(f"Ошибка: запрошенный формат недоступен.\n{str(e)[:300]}")
+                    else:
                         await db.set_file_processing_flag(user_id, is_processing=False)
-                        return await downloading_message.edit(f"Sorry Something went wrong:\nError:"
-                                                              f"  {str(e).split('Error')[-1]}")
+                        return await downloading_message.edit(f"Sorry Something went wrong:\nError: {str(e).split('Error')[-1]}")
+                if info is None:
+                    await db.set_file_processing_flag(user_id, is_processing=False)
+                    return await downloading_message.edit("Ошибка при скачивании.")
+                duration = info.get('duration', 0)
+                width = info.get('width', 0)
+                height = info.get('height', 0)
                 await downloading_message.delete()
             else:
                 local_availability_message = await event.respond(
@@ -274,14 +256,16 @@ class YoutubeDownloader:
                 }
                 if is_merge:
                     ydl_opts['merge_output_format'] = 'mp4'
-                with YoutubeDL(ydl_opts) as ydl:
-                    try:
+                try:
+                    with YoutubeDL(ydl_opts) as ydl:
                         info = ydl.extract_info(url, download=False)
-                        duration = info.get('duration', 0)
-                        width = info.get('width', 0)
-                        height = info.get('height', 0)
-                    except DownloadError as e:
-                        await db.set_file_processing_flag(user_id, is_processing=False)
+                except DownloadError:
+                    ydl_opts['format'] = 'bestvideo+bestaudio/best'
+                    with YoutubeDL(ydl_opts) as ydl:
+                        info = ydl.extract_info(url, download=False)
+                duration = info.get('duration', 0)
+                width = info.get('width', 0)
+                height = info.get('height', 0)
 
             upload_message = await event.respond("Uploading ... Please hold on.")
 

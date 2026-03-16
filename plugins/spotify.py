@@ -16,6 +16,19 @@ LINK_INFO_CACHE_TTL_SEC = 30 * 60
 # Удалять файлы в repository/Musics старше этого возраста (префетч/кэш; отправленные треки — из sent_file_cache)
 PREFETCH_FILE_MAX_AGE_SEC = 20 * 60  # 20 минут
 
+# Длина полоски прогресса (символов)
+PROGRESS_BAR_LEN = 12
+
+
+def _format_upload_progress(done: int, total: int) -> str:
+    """Строка для отображения прогресса загрузки в Telegram (progress_bar_function для fast_upload)."""
+    if total and total > 0:
+        pct = min(100, int(100 * done / total))
+        filled = min(PROGRESS_BAR_LEN, int(PROGRESS_BAR_LEN * done / total))
+        bar = "▰" * filled + "▱" * (PROGRESS_BAR_LEN - filled)
+        return f"📤 Загрузка в Telegram\n{bar} {pct}%"
+    return "📤 Загрузка в Telegram\n▱▱▱▱▱▱▱▱▱▱▱▱ 0%"
+
 
 class SpotifyDownloader:
 
@@ -451,16 +464,14 @@ class SpotifyDownloader:
     async def send_local_file(event, file_info, spotify_link_info, is_playlist: bool = False) -> bool:
         user_id = event.sender_id
         upload_status_message = None
-        # Provide feedback to the user during the upload process
         if not is_playlist:
-            upload_status_message = await event.reply("Now uploading... Please hold on.")
+            upload_status_message = await event.reply("📤 Загрузка в Telegram\n▱▱▱▱▱▱▱▱▱▱▱▱ 0%")
 
         try:
-            # Indicate ongoing file upload to enhance user experience
             async with event.client.action(event.chat_id, 'document'):
-                # Use a ThreadPoolExecutor to upload files in parallel
                 await SpotifyDownloader._upload_file(
-                    event, file_info, spotify_link_info, is_playlist
+                    event, file_info, spotify_link_info, is_playlist,
+                    upload_status_message=upload_status_message,
                 )
 
         except Exception as e:
@@ -480,7 +491,8 @@ class SpotifyDownloader:
         return True
 
     @staticmethod
-    async def _upload_file(event, file_info, spotify_link_info, playlist: bool = False):
+    async def _upload_file(event, file_info, spotify_link_info, playlist: bool = False,
+                           upload_status_message=None):
 
         if not os.path.exists(file_info['icon_path']):
             await SpotifyDownloader.download_icon(spotify_link_info)
@@ -530,9 +542,9 @@ class SpotifyDownloader:
                 uploaded_file = await fast_upload(
                     client=event.client,
                     file_location=upload_path,
-                    reply=None,
+                    reply=upload_status_message,
                     name=file_info['file_name'],
-                    progress_bar_function=None
+                    progress_bar_function=_format_upload_progress,
                 )
             else:
                 uploaded_file = None
@@ -671,8 +683,7 @@ class SpotifyDownloader:
 
             if os.path.isfile(file_path) and result:
                 if not is_playlist and download_message:
-                    download_message = await download_message.edit("Downloading . . . .")
-                    download_message = await download_message.edit("Downloading . . . . .")
+                    await download_message.edit("🎵 Скачано\n▰▰▰▰▰▰▰▰▰▰▰▰\nОтправка…")
                     await download_message.delete()
 
                 send_file_result = await SpotifyDownloader.send_local_file(

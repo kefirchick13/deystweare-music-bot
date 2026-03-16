@@ -26,11 +26,8 @@ class SoundCloudAudioDownloader:
 
         download_message = None
         if not silent and not is_playlist:
-            text = (
-                "Скачиваю аудио через SoundCloud...\n"
-                f"Формат: {music_quality['format']} / Качество: {music_quality['quality']}\n"
-                "Это может занять некоторое время, особенно при медленном соединении."
-            )
+            bar = "▱" * 12
+            text = f"🎵 Скачивание (SoundCloud)\n{bar}\nФормат: {music_quality['format']} · {music_quality['quality']}"
             download_message = await event.respond(text)
 
         query = f"{spotify_link_info['artist_name']} - {spotify_link_info['track_name']}"
@@ -53,7 +50,7 @@ class SoundCloudAudioDownloader:
 
             with YoutubeDL(ydl_opts) as ydl:
                 if not silent and not is_playlist and download_message:
-                    await download_message.edit("Downloading from SoundCloud . . .")
+                    await download_message.edit("🎵 Скачивание (SoundCloud)\n▰▰▰▰▰▰▱▱▱▱▱▱\nЗагрузка…")
                 await asyncio.to_thread(ydl.extract_info, query, download=True)
 
         async def download_handler():

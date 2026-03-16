@@ -27,11 +27,8 @@ class YouTubeAudioDownloader:
 
         download_message = None
         if not silent and not is_playlist:
-            text = (
-                "Скачиваю аудио через YouTube...\n"
-                f"Формат: {music_quality['format']} / Качество: {music_quality['quality']}\n"
-                "Это может занять некоторое время, особенно при медленном соединении."
-            )
+            bar = "▱" * 12
+            text = f"🎵 Скачивание (YouTube)\n{bar}\nФормат: {music_quality['format']} · {music_quality['quality']}"
             download_message = await event.respond(text)
 
         async def get_file_size(video_url):
@@ -67,7 +64,7 @@ class YouTubeAudioDownloader:
             }
 
             with YoutubeDL(ydl_opts) as ydl:
-                await download_message.edit("Downloading . . .") if not is_playlist else None
+                await download_message.edit("🎵 Скачивание (YouTube)\n▰▰▰▰▰▰▱▱▱▱▱▱\nЗагрузка…") if not is_playlist else None
                 await asyncio.to_thread(ydl.extract_info, video_url, download=True)
 
         async def download_handler():
@@ -80,7 +77,7 @@ class YouTubeAudioDownloader:
                     return False, None
 
             if not silent and not is_playlist and download_message:
-                await download_message.edit("Downloading . .")
+                await download_message.edit("🎵 Скачивание (YouTube)\n▰▰▰▰▰▰▰▰▱▱▱▱\nОбработка…")
 
             try:
                 await download_audio(video_url, filename, music_quality)

@@ -1,6 +1,8 @@
+import sys
 import tempfile
 import shutil
-from utils import YoutubeDL, re, lru_cache, hashlib, InputMediaPhotoExternal, db
+import subprocess
+from utils import YoutubeDL, re, lru_cache, hashlib, InputMediaPhotoExternal, db, asyncio
 from utils import os, InputMediaUploadedDocument, DocumentAttributeVideo, fast_upload
 from utils import DocumentAttributeAudio, DownloadError, WebpageMediaEmptyError
 from run import Button, Buttons
@@ -20,6 +22,40 @@ def _ydl_cookies_opts():
     if path and os.path.isfile(path):
         return {'cookiefile': path}
     return {}
+
+
+def _stream_yt_to_file(url, format_spec, is_merge, out_path, ffmpeg_location, cookies_path):
+    """
+    Запускает yt-dlp с выводом в stdout и пишет поток во временный файл.
+    Не держит весь файл в памяти; вызывать из run_in_executor.
+    """
+    cmd = [
+        sys.executable, '-m', 'yt_dlp',
+        '-f', format_spec,
+        '-o', '-',
+        '--quiet', '--no-warnings', '--no-progress',
+        '--ffmpeg-location', ffmpeg_location,
+        url,
+    ]
+    if is_merge:
+        cmd.insert(-1, '--merge-output-format')
+        cmd.insert(-1, 'mp4')
+    if cookies_path and os.path.isfile(cookies_path):
+        cmd.insert(-1, '--cookies')
+        cmd.insert(-1, cookies_path)
+    env = os.environ.copy()
+    env.setdefault("YT_DLP_NO_EJS", "1")
+    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env)
+    try:
+        with open(out_path, 'wb') as f:
+            while True:
+                chunk = process.stdout.read(65536)
+                if not chunk:
+                    break
+                f.write(chunk)
+    finally:
+        process.wait()
+        process.stdout.close()
 
 
 class YoutubeDownloader:
@@ -212,47 +248,53 @@ class YoutubeDownloader:
                 size_label = f"{filesize_str} MB" if filesize_str != "?" else ""
                 downloading_message = await event.respond(
                     f"Скачиваю файл с YouTube ({size_label})... Это может занять некоторое время.".strip())
-                ydl_opts_base = {
-                    'outtmpl': path,
-                    'quiet': True,
-                    'ffmpeg_location': _ffmpeg_location(),
+                ffmpeg_loc = _ffmpeg_location()
+                cookies_path = getattr(YoutubeDownloader, '_cookies_file_path', None)
+                ydl_opts_info = {
+                    'quiet': True, 'no_warnings': True,
+                    'ffmpeg_location': ffmpeg_loc,
                     **_ydl_cookies_opts(),
                 }
-                if is_merge:
-                    ydl_opts_base['merge_output_format'] = 'mp4'
-
                 info = None
                 try:
-                    ydl_opts = {**ydl_opts_base, 'format': format_spec}
-                    with YoutubeDL(ydl_opts) as ydl:
-                        info = ydl.extract_info(url, download=True)
+                    with YoutubeDL({**ydl_opts_info, 'format': format_spec}) as ydl:
+                        info = ydl.extract_info(url, download=False)
                 except DownloadError as e:
                     if 'not available' in str(e).lower() or 'requested format' in str(e).lower():
-                        # Формат недоступен — пробуем лучшее качество (video+audio)
-                        fallback_path = YoutubeDownloader.get_file_path(url, "best", extension if extension == "mp4" else "mp4")
+                        format_spec = 'bestvideo+bestaudio/best'
+                        extension = 'mp4'
+                        is_merge = True
                         try:
-                            ydl_opts = {
-                                **ydl_opts_base,
-                                'format': 'bestvideo+bestaudio/best',
-                                'outtmpl': fallback_path,
-                                'merge_output_format': 'mp4',
-                            }
-                            with YoutubeDL(ydl_opts) as ydl:
-                                info = ydl.extract_info(url, download=True)
-                            path = fallback_path
-                            extension = "mp4"
+                            with YoutubeDL({**ydl_opts_info, 'format': format_spec}) as ydl:
+                                info = ydl.extract_info(url, download=False)
                         except DownloadError:
                             await db.set_file_processing_flag(user_id, is_processing=False)
                             return await downloading_message.edit(f"Ошибка: запрошенный формат недоступен.\n{str(e)[:300]}")
                     else:
                         await db.set_file_processing_flag(user_id, is_processing=False)
                         return await downloading_message.edit(f"Sorry Something went wrong:\nError: {str(e).split('Error')[-1]}")
-                if info is None:
+                if not info:
                     await db.set_file_processing_flag(user_id, is_processing=False)
                     return await downloading_message.edit("Ошибка при скачивании.")
                 duration = info.get('duration', 0)
                 width = info.get('width', 0)
                 height = info.get('height', 0)
+                suffix = '.' + extension if extension in ('mp4', 'm4a', 'webm') else '.mp4'
+                fd, path = tempfile.mkstemp(suffix=suffix, prefix='yt_')
+                os.close(fd)
+                try:
+                    loop = asyncio.get_event_loop()
+                    await loop.run_in_executor(
+                        None,
+                        lambda: _stream_yt_to_file(url, format_spec, is_merge, path, ffmpeg_loc, cookies_path),
+                    )
+                except Exception as e:
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        pass
+                    await db.set_file_processing_flag(user_id, is_processing=False)
+                    return await downloading_message.edit(f"Ошибка при скачивании: {e}")
                 await downloading_message.delete()
             else:
                 local_availability_message = await event.respond(
@@ -331,20 +373,32 @@ class YoutubeDownloader:
                             attributes=[audio_attributes],
                         )
 
-                    # Send the downloaded file
+                    # Send the downloaded file (загрузка по path — чтение чанками, без полного файла в памяти)
                     await client.send_file(event.chat_id, file=media,
                                            caption=f"Enjoy!\n@deystweare_music_bot",
                                            force_document=False,
-                                           # This ensures the file is sent as a video/voice if possible
-                                           supports_streaming=True  # This enables video streaming
+                                           supports_streaming=True
                                            )
 
                 await upload_message.delete()
                 await local_availability_message.delete() if local_availability_message else None
                 await db.set_file_processing_flag(user_id, is_processing=False)
+                # Удаляем локальный файл после отправки (temp или repository/Youtube)
+                if path and os.path.isfile(path):
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        pass
 
             except Exception as Err:
                 await db.set_file_processing_flag(user_id, is_processing=False)
                 return await event.respond(f"Sorry There was a problem with your request.\nReason:{str(Err)}")
+            finally:
+                # При любом исходе удаляем временный файл (стрим в /tmp), если он наш
+                if path and os.path.isfile(path) and os.path.basename(path).startswith('yt_'):
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        pass
         else:
             await event.answer("Invalid button data.")

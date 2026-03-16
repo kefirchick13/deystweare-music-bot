@@ -3,6 +3,8 @@ import os
 import warnings
 
 os.environ["PATH"] = "/usr/bin:" + os.environ.get("PATH", "")
+# Без JS runtime: использовать legacy extraction (убирает предупреждение EJS)
+os.environ.setdefault("YT_DLP_NO_EJS", "1")
 # Подавить предупреждение pydub и задать явные пути к ffmpeg/ffprobe
 warnings.filterwarnings("ignore", message=".*ffmpeg or avconv.*", module="pydub.utils")
 try:

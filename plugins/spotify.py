@@ -62,6 +62,7 @@ class SpotifyDownloader:
         cls._link_info_cache = CachePool(ttl_sec=LINK_INFO_CACHE_TTL_SEC)
         cls._prefetch_tasks = {}  # file_path -> asyncio.Task (чтобы при Download дождаться префетча)
         cls._cleanup_old_prefetch_files()
+        cls._cleanup_old_icons()
 
     @classmethod
     def _cleanup_old_prefetch_files(cls):
@@ -71,6 +72,22 @@ class SpotifyDownloader:
         now = time.time()
         for name in os.listdir(cls.download_directory):
             path = os.path.join(cls.download_directory, name)
+            if not os.path.isfile(path):
+                continue
+            try:
+                if now - os.path.getmtime(path) > PREFETCH_FILE_MAX_AGE_SEC:
+                    os.remove(path)
+            except OSError:
+                pass
+
+    @classmethod
+    def _cleanup_old_icons(cls):
+        """Удаляет в repository/Icons обложки старше PREFETCH_FILE_MAX_AGE_SEC."""
+        if not os.path.isdir(cls.download_icon_directory):
+            return
+        now = time.time()
+        for name in os.listdir(cls.download_icon_directory):
+            path = os.path.join(cls.download_icon_directory, name)
             if not os.path.isfile(path):
                 continue
             try:

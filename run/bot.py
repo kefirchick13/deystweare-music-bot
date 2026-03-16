@@ -1,4 +1,4 @@
-from utils import BroadcastManager, db, asyncio, sanitize_query, DownloadError
+from utils import BroadcastManager, db, asyncio, sanitize_query, DownloadError, os
 from plugins import SpotifyDownloader, ShazamHelper, Insta, YoutubeDownloader
 from run import events, Button, MessageMediaDocument, update_bot_version_user_season, is_user_in_channel, \
     handle_continue_in_membership_message
@@ -314,7 +314,15 @@ class Bot:
         process_file_message = await event.respond("Processing Your File ...")
 
         file_path = await event.message.download_media(file=f"{ShazamHelper.voice_repository_dir}")
-        shazam_recognized = await ShazamHelper.recognize(file_path)
+        try:
+            shazam_recognized = await ShazamHelper.recognize(file_path)
+        finally:
+            # Удаляем голосовой файл сразу после распознавания — не копим в repository/Voices
+            if file_path and os.path.isfile(file_path):
+                try:
+                    os.remove(file_path)
+                except OSError:
+                    pass
         if not shazam_recognized:
             await waiting_message_search.delete()
             await process_file_message.delete()

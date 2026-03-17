@@ -1,6 +1,6 @@
 import logging
 import re
-from utils import BroadcastManager, db, asyncio, sanitize_query, DownloadError, os
+from utils import BroadcastManager, db, asyncio, sanitize_query, DownloadError, os, SpotifyException
 from plugins import SpotifyDownloader, ShazamHelper, YoutubeDownloader
 from run import events, Button, MessageMediaDocument, update_bot_version_user_season, is_user_in_channel, \
     handle_continue_in_membership_message
@@ -360,23 +360,63 @@ class Bot:
             return await event.respond("Sorry, There was a problem processing your request.")
 
     @staticmethod
+    async def _safe_respond(event, *args, **kwargs):
+        """Отправляет ответ; в группе без прав админа не падает."""
+        try:
+            return await event.respond(*args, **kwargs)
+        except Exception as e:
+            if e.__class__.__name__ == 'ChatAdminRequiredError':
+                logging.getLogger(__name__).warning("ChatAdminRequiredError: cannot send to chat %s", event.chat_id)
+            else:
+                raise
+
+    @staticmethod
     async def process_text_query(event):
         if not await Bot.process_bot_interaction(event):
             return
 
         if len(event.message.text) > 33:
-            return await event.respond("Your Search Query is too long. :(")
+            try:
+                return await event.respond("Your Search Query is too long. :(")
+            except Exception:
+                return
 
-        waiting_message_search = await event.respond('⏳')
+        try:
+            waiting_message_search = await event.respond('⏳')
+        except Exception:
+            return
         sanitized_query = await sanitize_query(event.message.text)
         if not sanitized_query:
-            await event.respond("Your input was not valid. Please try again with a valid search term.")
+            try:
+                await event.respond("Your input was not valid. Please try again with a valid search term.")
+            except Exception:
+                pass
+            await waiting_message_search.delete()
             return
 
-        search_result = await SpotifyDownloader.search_spotify_based_on_user_input(sanitized_query, limit=10)
-        if len(search_result) == 0:
+        try:
+            search_result = await SpotifyDownloader.search_spotify_based_on_user_input(sanitized_query, limit=10)
+        except (SpotifyException, Exception) as e:
+            err_msg = str(e).lower()
+            if '429' in err_msg or 'rate' in err_msg or '502' in err_msg or 'retry' in err_msg or 'max retries' in err_msg:
+                try:
+                    await event.respond("Spotify временно недоступен (лимит запросов или перегрузка). Попробуйте через минуту.")
+                except Exception:
+                    pass
+            else:
+                try:
+                    await event.respond(f"Ошибка при поиске: {e}")
+                except Exception:
+                    pass
             await waiting_message_search.delete()
-            await event.respond("По вашему запросу ничего не найдено. Попробуйте уточнить название или исполнителя.")
+            return
+
+        if len(search_result) == 0:
+            try:
+                await event.respond("По вашему запросу ничего не найдено. Попробуйте уточнить название или исполнителя.")
+            except Exception:
+                pass
+            await waiting_message_search.delete()
             return
         button_list = Buttons.get_search_result_buttons(sanitized_query, search_result)
 
@@ -385,9 +425,15 @@ class Bot:
             text = BotMessageHandler.get_search_result_message(language)
             await event.respond(text, buttons=button_list)
         except Exception as Err:
-            await event.respond(f"Sorry There Was an Error Processing Your Request: {str(Err)}")
+            try:
+                await event.respond(f"Sorry There Was an Error Processing Your Request: {str(Err)}")
+            except Exception:
+                pass
 
-        await waiting_message_search.delete()
+        try:
+            await waiting_message_search.delete()
+        except Exception:
+            pass
 
     @staticmethod
     async def handle_next_prev_page(event):

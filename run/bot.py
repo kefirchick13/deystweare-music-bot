@@ -398,18 +398,24 @@ class Bot:
             search_result = await SpotifyDownloader.search_spotify_based_on_user_input(sanitized_query, limit=10)
         except (SpotifyException, Exception) as e:
             err_msg = str(e).lower()
-            if '429' in err_msg or 'rate' in err_msg or '502' in err_msg or 'retry' in err_msg or 'max retries' in err_msg:
-                try:
-                    await event.respond("Spotify временно недоступен (лимит запросов или перегрузка). Попробуйте через минуту.")
-                except Exception:
-                    pass
-            else:
-                try:
-                    await event.respond(f"Ошибка при поиске: {e}")
-                except Exception:
-                    pass
-            await waiting_message_search.delete()
-            return
+            try:
+                search_result = await SpotifyDownloader.search_soundcloud_fallback(sanitized_query, limit=10)
+            except Exception:
+                search_result = []
+            if not search_result:
+                if '429' in err_msg or 'rate' in err_msg or '502' in err_msg or 'retry' in err_msg or 'max retries' in err_msg:
+                    try:
+                        await event.respond("Spotify временно недоступен (лимит запросов). Поиск по SoundCloud ничего не нашёл. Попробуйте позже.")
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        await event.respond(f"Ошибка при поиске: {e}")
+                    except Exception:
+                        pass
+                await waiting_message_search.delete()
+                return
+            # Показать результаты по SoundCloud (те же кнопки и сценарий скачивания)
 
         if len(search_result) == 0:
             try:

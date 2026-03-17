@@ -60,9 +60,16 @@ class SpotifyDownloader:
                                                                        client_secret=cls.SPOTIFY_CLIENT_SECRET))
         cls.GENIUS_API_BASE = "https://api.genius.com"
         cls._link_info_cache = CachePool(ttl_sec=LINK_INFO_CACHE_TTL_SEC)
+        cls._sc_link_info_cache = CachePool(ttl_sec=10 * 60)  # link_info по sc_ id, 10 мин, затем очистка
         cls._prefetch_tasks = {}  # file_path -> asyncio.Task (чтобы при Download дождаться префетча)
+        cls._run_cleanups()
+
+    @classmethod
+    def _run_cleanups(cls):
+        """Очистка файлов префетча, иконок и просроченных записей кэша link_info (SoundCloud)."""
         cls._cleanup_old_prefetch_files()
         cls._cleanup_old_icons()
+        cls._sc_link_info_cache.cleanup_expired()
 
     @classmethod
     def _cleanup_old_prefetch_files(cls):
@@ -131,6 +138,13 @@ class SpotifyDownloader:
 
     @staticmethod
     async def extract_data_from_spotify_link(event, spotify_url):
+        # Результат поиска SoundCloud: track_id = "sc_xxx" — данные берём из кэша
+        if isinstance(spotify_url, str) and spotify_url.startswith("sc_"):
+            link_info = SpotifyDownloader._sc_link_info_cache.get(spotify_url)
+            if link_info:
+                return link_info
+            await event.respond("Срок действия результата поиска истёк. Выполните поиск заново.")
+            return {}
 
         # Identify the type of Spotify link to handle the data extraction accordingly
         link_type = SpotifyDownloader.identify_spotify_link_type(spotify_url)
@@ -377,10 +391,26 @@ class SpotifyDownloader:
     async def download_icon(link_info):
         track_name = link_info['track_name']
         artist_name = link_info['artist_name']
-        image_url = link_info["image_url"]
+        image_url = link_info.get("image_url")
 
         icon_name = f"{track_name} - {artist_name}.jpeg".replace("/", " ")
         icon_path = os.path.join(SpotifyDownloader.download_icon_directory, icon_name)
+
+        if not image_url:
+            # SoundCloud без обложки — используем плейсхолдер
+            default_path = os.path.join(SpotifyDownloader.download_icon_directory, "default_soundcloud.jpeg")
+            if not os.path.isfile(default_path):
+                placeholder_url = "https://a1.sndcdn.com/images/logo_facebook.png"
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(placeholder_url) as response:
+                            if response.status == 200:
+                                image_data = await response.read()
+                                img = Image.open(BytesIO(image_data))
+                                img.save(default_path)
+                except Exception as e:
+                    print(f"Failed to download SoundCloud placeholder: {e}")
+            return default_path if os.path.isfile(default_path) else icon_path
 
         if not os.path.isfile(icon_path):
             try:
@@ -447,22 +477,35 @@ class SpotifyDownloader:
 
         icon_path = await SpotifyDownloader.download_icon(link_info)
 
-        SpotifyInfoButtons = [
-            [Button.inline("Download Track", data=f"spotify/dl/music/{link_info['track_id']}")],
-            [Button.inline("Artist Info", data=f"spotify/artist/{link_info['track_id']}")],
-            [Button.inline("Lyrics", data=f"spotify/lyrics/{link_info['track_id']}")],
-            [Button.url("Listen On Spotify", url=link_info["track_url"]),
-             Button.url("Listen On Youtube", url=link_info['youtube_link']) if link_info[
-                 'youtube_link'] else Button.inline("Listen On Youtube", data=b"unavailable_feature")],
-            [Button.inline("Cancel", data=b"cancel")]
-        ]
+        is_soundcloud = (link_info.get("track_id") or "").startswith("sc_")
 
-        caption = (
-            f"**🎧 Title:** [{link_info['track_name']}]({link_info['track_url']})\n"
-            f"**🎤 Artist:** [{link_info['artist_name']}]({link_info['artist_url']})\n"
-            f"**💽 Album:** [{link_info['album_name']}]({link_info['album_url']})\n"
-            f"**🗓 Release Year:** {link_info['release_year']}\n"
-        )
+        if is_soundcloud:
+            SpotifyInfoButtons = [
+                [Button.inline("Download Track", data=f"spotify/dl/music/{link_info['track_id']}")],
+                [Button.url("Listen On SoundCloud", url=link_info.get("track_url") or "#")],
+                [Button.inline("Cancel", data=b"cancel")]
+            ]
+            caption = (
+                f"**🎧 Title:** [{link_info['track_name']}]({link_info.get('track_url', '#')})\n"
+                f"**🎤 Artist:** {link_info['artist_name']}\n"
+                f"**🗓 Release:** {link_info.get('release_year', '—')}\n"
+            )
+        else:
+            SpotifyInfoButtons = [
+                [Button.inline("Download Track", data=f"spotify/dl/music/{link_info['track_id']}")],
+                [Button.inline("Artist Info", data=f"spotify/artist/{link_info['track_id']}")],
+                [Button.inline("Lyrics", data=f"spotify/lyrics/{link_info['track_id']}")],
+                [Button.url("Listen On Spotify", url=link_info["track_url"]),
+                 Button.url("Listen On Youtube", url=link_info['youtube_link']) if link_info.get(
+                     'youtube_link') else Button.inline("Listen On Youtube", data=b"unavailable_feature")],
+                [Button.inline("Cancel", data=b"cancel")]
+            ]
+            caption = (
+                f"**🎧 Title:** [{link_info['track_name']}]({link_info['track_url']})\n"
+                f"**🎤 Artist:** [{link_info['artist_name']}]({link_info['artist_url']})\n"
+                f"**💽 Album:** [{link_info['album_name']}]({link_info['album_url']})\n"
+                f"**🗓 Release Year:** {link_info['release_year']}\n"
+            )
 
         try:
             await client.send_file(
@@ -824,6 +867,23 @@ class SpotifyDownloader:
         return extracted_details
 
     @staticmethod
+    async def search_soundcloud_fallback(query: str, limit: int = 10):
+        """
+        Поиск через SoundCloud (yt-dlp). Результаты кладутся в _sc_link_info_cache (TTL как у файлов/обложек).
+        Возвращает список того же формата, что и search_spotify_based_on_user_input,
+        или пустой список при ошибке/пустом результате.
+        """
+        from .soundcloud_audio_downloader import SoundCloudAudioDownloader
+        SpotifyDownloader._sc_link_info_cache.cleanup_expired()
+        try:
+            results, link_info_by_id = await SoundCloudAudioDownloader.search_soundcloud(query, limit=limit)
+        except Exception:
+            return []
+        for track_id, link_info in (link_info_by_id or {}).items():
+            SpotifyDownloader._sc_link_info_cache.set(track_id, link_info)
+        return results
+
+    @staticmethod
     async def send_30s_preview(event):
         try:
             query_data = str(event.data)
@@ -836,6 +896,9 @@ class SpotifyDownloader:
     async def send_artists_info(event):
         query_data = str(event.data)
         track_id = query_data.split("/")[-1][:-1]
+        if (track_id or "").startswith("sc_"):
+            await event.respond("Доступно только для треков из Spotify.")
+            return
         track_info = SpotifyDownloader.spotify_account.track(track_id=track_id)
         artist_ids = [artist["id"] for artist in track_info['artists']]
         artist_details = []
@@ -894,6 +957,9 @@ class SpotifyDownloader:
 
         query_data = str(event.data)
         track_id = query_data.split("/")[-1][:-1]
+        if (track_id or "").startswith("sc_"):
+            await event.respond("Доступно только для треков из Spotify.")
+            return
 
         waiting_message = await event.respond("Searching For Lyrics in Genius ....")
 

@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 from utils import asyncio, YoutubeDL, db
 
@@ -77,4 +78,98 @@ class SoundCloudAudioDownloader:
                 return False, download_message
 
         return await download_handler()
+
+    @staticmethod
+    async def search_soundcloud(query: str, limit: int = 10):
+        """
+        Поиск треков на SoundCloud через yt-dlp (scsearch).
+        Возвращает (search_results, link_info_by_id):
+        - search_results: список dict с track_name, artist_name, release_year, track_id (sc_xxx)
+        - link_info_by_id: dict sc_id -> link_info для кэша (extract_data_from_spotify_link и скачивание).
+        """
+        if not query or limit < 1:
+            return [], {}
+
+        ydl_opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "noplaylist": True,
+        }
+
+        def _extract():
+            with YoutubeDL(ydl_opts) as ydl:
+                try:
+                    # scsearchN:query — поиск в SoundCloud, N результатов
+                    info = ydl.extract_info(f"scsearch{limit}:{query}", download=False)
+                except Exception:
+                    return None
+            if not info or info.get("_type") != "playlist":
+                return None
+            return info.get("entries") or []
+
+        try:
+            entries = await asyncio.to_thread(_extract)
+        except Exception:
+            return [], {}
+
+        if not entries:
+            return [], {}
+
+        search_results = []
+        link_info_by_id = {}
+        # Плейсхолдер обложки для треков без thumbnail
+        default_art = "https://a1.sndcdn.com/images/logo_facebook.png"
+
+        for entry in entries[:limit]:
+            if not entry:
+                continue
+            raw_id = entry.get("id")
+            url = entry.get("url") or entry.get("webpage_url") or ""
+            if raw_id is not None:
+                sc_id = str(raw_id)
+            elif url and "soundcloud.com" in url:
+                sc_id = (re.search(r"soundcloud\.com/[\w-]+/([\w-]+)", url) or re.search(r"/([^/]+)/?$", url))
+                sc_id = (sc_id.group(1) if sc_id else url).replace("/", "_")
+            else:
+                continue
+            track_id = f"sc_{sc_id}"
+
+            title = entry.get("title") or "Unknown"
+            uploader = entry.get("uploader") or entry.get("artist") or "Unknown"
+            duration = entry.get("duration")
+            duration_ms = int(duration * 1000) if duration else 0
+            url = entry.get("url") or entry.get("webpage_url") or ""
+            thumb = entry.get("thumbnail") or default_art
+
+            release_year = "—"
+            if entry.get("timestamp"):
+                try:
+                    from datetime import datetime
+                    release_year = str(datetime.utcfromtimestamp(entry["timestamp"]).year)
+                except Exception:
+                    pass
+
+            search_results.append({
+                "track_name": title,
+                "artist_name": uploader,
+                "release_year": release_year,
+                "track_id": track_id,
+            })
+
+            link_info_by_id[track_id] = {
+                "type": "track",
+                "track_name": title,
+                "artist_name": uploader,
+                "release_year": release_year,
+                "track_id": track_id,
+                "track_url": url or "#",
+                "artist_url": "#",
+                "album_name": "—",
+                "album_url": "#",
+                "image_url": thumb,
+                "duration_ms": duration_ms,
+                "youtube_link": None,
+            }
+
+        return search_results, link_info_by_id
 

@@ -10,7 +10,7 @@ class BotMessageHandler:
         # YouTube отключён — приветствие без YouTube. Чтобы вернуть с YouTube: раскомментировать блок ниже и закомментировать текущий return.
         # if language == "en":
         #     return (
-        #         "Welcome to **Deystweare Music Bot** 🎧\n\n"
+        #         "Welcome to **Lumen Music Bot** 🎧\n\n"
         #         "I can:\n"
         #         "- Search by text or Spotify link\n"
         #         "- Search by voice message (Shazam)\n"
@@ -21,7 +21,7 @@ class BotMessageHandler:
         #     )
         # else:
         #     return (
-        #         "Добро пожаловать в **Deystweare Music Bot** 🎧\n\n"
+        #         "Добро пожаловать в **Lumen Music Bot** 🎧\n\n"
         #         "Я умею:\n"
         #         "- Искать треки по тексту или ссылке Spotify\n"
         #         "- Искать музыку по голосовому сообщению (Shazam)\n"
@@ -32,7 +32,7 @@ class BotMessageHandler:
         #     )
         if language == "en":
             return (
-                "Welcome to **Deystweare Music Bot** 🎧\n\n"
+                "Welcome to **Lumen Music Bot** 🎧\n\n"
                 "I can:\n"
                 "- Search by text or Spotify link\n"
                 "- Search by voice message (Shazam)\n"
@@ -43,7 +43,7 @@ class BotMessageHandler:
             )
         else:
             return (
-                "Добро пожаловать в **Deystweare Music Bot** 🎧\n\n"
+                "Добро пожаловать в **Lumen Music Bot** 🎧\n\n"
                 "Я умею:\n"
                 "- Искать треки по тексту или ссылке Spotify\n"
                 "- Искать музыку по голосовому сообщению (Shazam)\n"
@@ -57,7 +57,7 @@ class BotMessageHandler:
     def get_instruction_message(language: str) -> str:
         if language == "en":
             return (
-                "🎧 Deystweare Music Bot — what it can do 🎧\n\n"
+                "🎧 Lumen Music Bot — what it can do 🎧\n\n"
                 "🎵 Music / Spotify / voice:\n"
                 "1. Send a Spotify track/album/playlist link 🔗\n"
                 "2. Wait for processing ⏳\n"
@@ -70,7 +70,7 @@ class BotMessageHandler:
             )
         else:
             return (
-                "🎧 Deystweare Music Bot — что он умеет 🎧\n\n"
+                "🎧 Lumen Music Bot — что он умеет 🎧\n\n"
                 "🎵 Музыка / Spotify / голос:\n"
                 "1. Отправь ссылку на трек / альбом / плейлист Spotify 🔗\n"
                 "2. Дождись обработки запроса ⏳\n"

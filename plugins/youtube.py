@@ -375,7 +375,7 @@ class YoutubeDownloader:
                         audio_attributes = DocumentAttributeAudio(
                             duration=int(duration),
                             title="Downloaded Audio",  # Replace with actual title
-                            performer="@deystweare_music_bot",  # Replace with actual performer
+                            performer="@lumen_portal_bot",  # Replace with actual performer
                             # Add other attributes as needed
                         )
 
@@ -388,7 +388,7 @@ class YoutubeDownloader:
 
                     # Send the downloaded file (загрузка по path — чтение чанками, без полного файла в памяти)
                     await client.send_file(event.chat_id, file=media,
-                                           caption=f"Enjoy!\n@deystweare_music_bot",
+                                           caption=f"Enjoy!\n @lumen_portal_bot",
                                            force_document=False,
                                            supports_streaming=True
                                            )

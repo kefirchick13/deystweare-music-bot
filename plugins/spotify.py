@@ -562,7 +562,7 @@ class SpotifyDownloader:
         icon_path = file_info['icon_path']
         caption = (
             f"🎵 **{spotify_link_info['track_name']}** — **{spotify_link_info['artist_name']}**\n"
-            "@deystweare_music_bot"
+            "@lumen_portal_bot"
         )
 
         # Для одного трека пробуем отправить из кэша (мгновенно, без повторной загрузки)
@@ -627,7 +627,7 @@ class SpotifyDownloader:
             audio_attributes = DocumentAttributeAudio(
                 duration=duration_sec,
                 title=f"{spotify_link_info['track_name']} - {spotify_link_info['artist_name']}",
-                performer="@deystweare_music_bot",
+                performer="@lumen_portal_bot",
                 waveform=None,
                 voice=False
             )

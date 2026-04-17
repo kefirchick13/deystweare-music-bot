@@ -307,6 +307,20 @@ class Bot:
         process_file_message = await event.respond("Processing Your File ...")
 
         file_path = await event.message.download_media(file=f"{ShazamHelper.voice_repository_dir}")
+        if not file_path or not os.path.isfile(file_path):
+            await waiting_message_search.delete()
+            await process_file_message.delete()
+            await event.respond("Не удалось скачать голосовое сообщение. Попробуйте ещё раз.")
+            return
+        if os.path.getsize(file_path) < 200:
+            try:
+                os.remove(file_path)
+            except OSError:
+                pass
+            await waiting_message_search.delete()
+            await process_file_message.delete()
+            await event.respond("Аудиофайл слишком короткий или пустой.")
+            return
         try:
             shazam_recognized = await ShazamHelper.recognize(file_path)
         finally:

@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import shutil
 import subprocess
@@ -11,7 +12,10 @@ class ShazamHelper:
 
     @classmethod
     def initialize(cls):
-        cls.Shazam = Shazam()
+        # Регион влияет на endpoint Shazam; для RU/СНГ удобнее ru-RU + RU
+        lang = os.getenv("SHAZAM_LANGUAGE", "ru-RU")
+        country = os.getenv("SHAZAM_ENDPOINT_COUNTRY", "RU")
+        cls.Shazam = Shazam(language=lang, endpoint_country=country)
 
         cls.voice_repository_dir = "repository/Voices"
         if not os.path.isdir(cls.voice_repository_dir):
@@ -20,9 +24,7 @@ class ShazamHelper:
     @staticmethod
     def _ffmpeg_to_wav(input_path: str) -> str:
         """
-        Telegram voice = OGG/Opus. ShazamIO внутри опирается на ffmpeg/pydub и часто
-        ошибочно трактует поток как MP3 → «invalid mpeg audio header».
-        Явно перегоняем в моно WAV 44.1 kHz PCM.
+        Telegram voice = OGG/Opus. Перегоняем в моно WAV 44.1 kHz PCM для стабильного чтения.
         """
         ffmpeg = shutil.which("ffmpeg") or "/usr/bin/ffmpeg"
         fd, out_path = tempfile.mkstemp(suffix=".wav")
@@ -59,11 +61,26 @@ class ShazamHelper:
         return out_path
 
     @staticmethod
+    def _pick_track_dict(data: dict):
+        """Ответ Shazam v2 часто кладёт трек в matches[0].track, а не в корень."""
+        if not isinstance(data, dict):
+            return None
+        track = data.get("track")
+        if isinstance(track, dict) and track.get("title"):
+            return track
+        matches = data.get("matches")
+        if isinstance(matches, list) and matches:
+            first = matches[0]
+            if isinstance(first, dict):
+                t = first.get("track")
+                if isinstance(t, dict) and t.get("title"):
+                    return t
+        return None
+
+    @staticmethod
     async def recognize(file):
         """
         Распознавание трека по файлу с таймаутом.
-        Если Shazam зависает или отвечает слишком долго, возвращаем пустую строку,
-        чтобы бот не "висел" бесконечно.
         """
         wav_path = None
         path_for_shazam = file
@@ -79,11 +96,16 @@ class ShazamHelper:
             async def _do_recognize():
                 try:
                     return await ShazamHelper.Shazam.recognize(path_for_shazam)
-                except Exception:
-                    return await ShazamHelper.Shazam.recognize_song(path_for_shazam)
+                except Exception as e1:
+                    print("Shazam.recognize (rust) failed:", e1)
+                    try:
+                        return await ShazamHelper.Shazam.recognize_song(path_for_shazam)
+                    except Exception as e2:
+                        print("Shazam.recognize_song (legacy) failed:", e2)
+                        raise
 
             try:
-                out = await asyncio.wait_for(_do_recognize(), timeout=20)
+                out = await asyncio.wait_for(_do_recognize(), timeout=45)
             except asyncio.TimeoutError:
                 print("Shazam recognize timeout for file:", file)
                 return ""
@@ -91,13 +113,17 @@ class ShazamHelper:
                 print("Shazam recognize error:", e)
                 return ""
 
-            try:
+            if isinstance(out, dict):
                 status = out.get("status")
-                message = out.get("message") or out.get("status", {}).get("msg")
-                print("Shazam raw status:", status)
-                print("Shazam message:", message)
-            except Exception:
-                print("Shazam response (raw):", out)
+                msg = out.get("message") or (out.get("status") or {}).get("msg")
+                print("Shazam raw status:", status, "message:", msg)
+                if not ShazamHelper.extract_song_details(out):
+                    # Короткий лог для отладки «нашёлся ответ, но не распарсили»
+                    try:
+                        preview = json.dumps(out, ensure_ascii=False)[:800]
+                        print("Shazam response preview:", preview)
+                    except Exception:
+                        print("Shazam response (non-json-serializable keys):", list(out.keys()))
 
             return ShazamHelper.extract_song_details(out)
         finally:
@@ -107,10 +133,14 @@ class ShazamHelper:
                 except OSError:
                     pass
 
-    # Function to extract the Spotify link
     @staticmethod
     def extract_spotify_link(data):
-        for provider in data["track"]["hub"]["providers"]:
+        track = ShazamHelper._pick_track_dict(data)
+        hub = track.get("hub") if track else None
+        providers = hub.get("providers") if isinstance(hub, dict) else None
+        if not providers:
+            return None
+        for provider in providers:
             if provider["type"] == "SPOTIFY":
                 for action in provider["actions"]:
                     if action["type"] == "uri":
@@ -119,16 +149,15 @@ class ShazamHelper:
 
     @staticmethod
     def extract_song_details(data):
-
-        try:
-            music_name = data["track"]["title"]
-            artists_name = data["track"]["subtitle"]
-        except Exception:
+        track = ShazamHelper._pick_track_dict(data)
+        if not track:
             return ""
 
-        song_details = {
-            "music_name": music_name,
-            "artists_name": artists_name,
-        }
-        song_details_string = ", ".join(f"{value}" for value in song_details.values())
-        return song_details_string
+        title = track.get("title")
+        subtitle = (track.get("subtitle") or "").strip()
+        if not title:
+            return ""
+
+        if subtitle:
+            return f"{title}, {subtitle}"
+        return str(title)
